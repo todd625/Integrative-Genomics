@@ -1,7 +1,4 @@
-# Data files
-data/raw_data/*
-!data/raw_data/.gitkeep
-data/*/large_files/
+# Large data files (keep on HPC storage)
 *.fastq
 *.fastq.gz
 *.fq
@@ -9,11 +6,41 @@ data/*/large_files/
 *.sam
 *.bam
 *.bai
+*.fasta
+*.fa
+*.fna
+*.gff
+*.gff3
+*.gtf
 
-# Results
-results/*/
-!results/example_*/
-!results/.gitkeep
+# Container files (stored on HPC)
+*.sif
+*.img
+
+# SLURM output files
+slurm-*.out
+slurm-*.err
+*.o[0-9]*
+*.e[0-9]*
+
+# Results files that are too large for git
+results/*/*.bam
+results/*/*.sam
+results/*/*.fastq*
+results/*/*.fasta
+results/*/*.fa
+
+# But keep small result files
+!results/*/*.txt
+!results/*/*.tsv
+!results/*/*.csv
+!results/*/*.md
+!results/*/*.html
+!results/*/*.png
+!results/*/*.jpg
+!results/*/*.pdf
+!results/*/*.bed
+!results/*/.gitkeep
 
 # Temporary files
 *.tmp
@@ -21,15 +48,9 @@ results/*/
 temp/
 tmp/
 
-# Container outputs
-*.sif
-*.img
-
 # Log files
 *.log
 logs/
-.nextflow*
-work/
 
 # OS files
 .DS_Store
@@ -41,9 +62,3 @@ Thumbs.db
 *~
 .vscode/
 .idea/
-
-# Python
-__pycache__/
-*.pyc
-*.pyo
-.env
