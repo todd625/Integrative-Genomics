@@ -55,10 +55,25 @@ apptainer exec /fs/scratch/PAS3260/Fiona/Assembly/Software/fastqc_multiqc.sif fa
 /fs/scratch/PAS3260/Fiona/Team_Project/01_assembly/Preprocessing/ont_reads_100bptrim.fastq.gz --outdir=.
 ### looks pretty good i think?
 
-## kmer analysis
-mkdir kmeranalysis
+## assembly
+cat > /fs/scratch/PAS3260/Fiona/Team_Project/Containers/Assembly_Flye.sh << EOF
+#!/bin/sh
+#SBATCH -J ondemand/sys/myjobs/basic_sequential
+#SBATCH --job-name FlyeAssembly
+#SBATCH --output=logs/flye_assembly_%j.out
+#SBATCH --error=logs/flye_assembly_%j.err
+#SBATCH --time=24:00:00
+#SBATCH --ntasks=28
+#SBATCH --exclusive
+#SBATCH --mail-type=BEGIN,END,FAIL
+#SBATCH --account=PAS3260
 
+set -euo pipefail
 
-## Assembly
+home=/fs/scratch/PAS3260/Fiona/Team_Project/01_assembly
 
-## Assembly check
+apptainer exec /fs/scratch/PAS3260/Fiona/Team_Project/Containers/flye.sif flye --nano-raw /fs/scratch/PAS3260/Fiona/Team_Project/01_assembly/ont_reads_R10.fastq.gz -g 45m -t 28 -o Flye_assembly
+EOF
+
+#send script to the scheduler
+sbatch /fs/scratch/PAS3260/Fiona/Team_Project/Containers/Assembly_Flye.sh
