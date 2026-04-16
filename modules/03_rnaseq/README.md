@@ -65,6 +65,7 @@ EOF
 sbatch /fs/scratch/PAS3260/Fiona/Team_Project/03_rnaseq/hisat2index/hisat2index.sh
 ```
 ### trim the adapters off the fastqs, move into trimmed directory
+```bash
 cat > /fs/scratch/PAS3260/Fiona/Team_Project/03_rnaseq/scripts/06b_trimmomatic.sh << 'EOF'
 #!/bin/bash
 #SBATCH --account=PAS3260
@@ -117,8 +118,10 @@ echo "[$(date)] Done: ${SAMPLE}"
 EOF
 
 sbatch /fs/scratch/PAS3260/Fiona/Team_Project/03_rnaseq/scripts/06b_trimmomatic.sh
+```
 
 ### align rna seq reads with hisat2, pipe to samtools
+```bash
 cat > /fs/scratch/PAS3260/Fiona/Team_Project/03_rnaseq/hisat2index/hisat2index.sh << 'EOF'
 #!/bin/bash
 #SBATCH --job-name=hisat2_align
@@ -171,8 +174,19 @@ cat /fs/scratch/PAS3260/Fiona/Team_Project/03_rnaseq/logs/hisat2_${SAMPLE}.summa
 EOF
 
 sbatch /fs/scratch/PAS3260/Fiona/Team_Project/03_rnaseq/hisat2index/hisat2index.sh
+```
 
-## `featurecounts_quantify.slurm`: Count reads per gene - need to fix
+## annotation?
+```bash
+apptainer exec prokka.sif \
+prokka /fs/scratch/PAS3260/Fiona/Team_Project/03_rnaseq/prokka/novel_isolate_genome.fa \
+  --outdir /fs/scratch/PAS3260/Fiona/Team_Project/03_rnaseq/prokka/output \
+  --prefix isolate \
+  --cpus 8
+```
+
+## `featurecounts_quantify.slurm`: Count reads per gene
+```bash
 cat > /fs/scratch/PAS3260/Fiona/Team_Project/03_rnaseq/scripts/06e_featurecounts.sh << 'EOF'
 #!/bin/bash
 #SBATCH --account=PAS3260
@@ -187,30 +201,251 @@ cat > /fs/scratch/PAS3260/Fiona/Team_Project/03_rnaseq/scripts/06e_featurecounts
 set -euo pipefail
 
 CONTAINERS=/fs/scratch/PAS3260/Fiona/Team_Project/03_rnaseq/containers
-PELTASTER=/fs/scratch/PAS3260/Fiona/Team_Project/03_rnaseq
+STUFF=/fs/scratch/PAS3260/Fiona/Team_Project/03_rnaseq
 
 apptainer exec \
-  --bind ${PELTASTER}:/data \
-  ${CONTAINERS}/subread_2.0.6.sif \
+  --bind ${STUFF}:/data \
+  ${CONTAINERS}/subread_2.1.1.sif \
   featureCounts \
-    -a /data/00_data/genome/Pf_annotation.gff3 \
-    -o /data/03_rnaseq/counts/Pf_SRR8119502_counts.txt \
-    -t gene \
-    -g ID \
-    -p \
-    --countReadPairs \
-    -B \
-    -C \
-    -T 8 \
-    /data/03_rnaseq/alignments/SRR8119502_sorted.bam
+  -a /fs/scratch/PAS3260/Fiona/Team_Project/03_rnaseq/prokka/output/isolate.gff \
+  -o /fs/scratch/PAS3260/Fiona/Team_Project/03_rnaseq/counts/counts.txt \
+  -t CDS \
+  -g ID \
+  -p \
+  --countReadPairs \
+  -B \
+  -C \
+  -T 8 \
+  /fs/scratch/PAS3260/Fiona/Team_Project/03_rnaseq/aligned/rnaseq_wt_rep1.sorted.bam \
+  /fs/scratch/PAS3260/Fiona/Team_Project/03_rnaseq/aligned/rnaseq_wt_rep2.sorted.bam \
+  /fs/scratch/PAS3260/Fiona/Team_Project/03_rnaseq/aligned/rnaseq_wt_rep3.sorted.bam
 
 echo "=== featureCounts summary ==="
-cat ${PELTASTER}/03_rnaseq/counts/Pf_SRR8119502_counts.txt.summary
+cat ${STUFF}/counts/counts.txt.summary
 
 echo ""
 echo "=== First 15 data rows ==="
-grep -v "^#" ${PELTASTER}/03_rnaseq/counts/Pf_SRR8119502_counts.txt \
+grep -v "^#" ${STUFF}/counts/counts.txt \
   | head -15
 EOF
 
-sbatch ${PELTASTER}/scripts/06e_featurecounts.sh
+sbatch /fs/scratch/PAS3260/Fiona/Team_Project/03_rnaseq/scripts/06e_featurecounts.sh
+```
+
+## differential gene expression (deseq2)
+```bash
+
+cat > /tmp/r_header.R << 'EOF'
+# Set writable library path
+lib_path <- "/fs/scratch/PAS3260/Fiona/R_libs"
+dir.create(lib_path, showWarnings = FALSE, recursive = TRUE)
+.libPaths(c(lib_path, .libPaths()))
+
+# Install missing packages
+if (!requireNamespace("ggrepel", quietly = TRUE)) install.packages("ggrepel", lib = lib_path)
+if (!requireNamespace("pheatmap", quietly = TRUE)) install.packages("pheatmap", lib = lib_path)
+if (!requireNamespace("RColorBrewer", quietly = TRUE)) install.packages("RColorBrewer", lib = lib_path)
+if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager", lib = lib_path)
+if (!requireNamespace("DESeq2", quietly = TRUE)) BiocManager::install("DESeq2", lib = lib_path)
+EOF
+
+# Prepend header to R script
+cat /tmp/r_header.R /fs/scratch/PAS3260/Fiona/Team_Project/03_rnaseq/scripts/deseq2.R > /tmp/deseq2_full.R
+cp /tmp/deseq2_full.R /fs/scratch/PAS3260/Fiona/Team_Project/03_rnaseq/scripts/deseq2.R
+
+mkdir -p /fs/scratch/PAS3260/Fiona/Team_Project/03_rnaseq/deseq
+cat > /fs/scratch/PAS3260/Fiona/Team_Project/03_rnaseq/scripts/deseq2.R << 'REOF'
+
+suppressPackageStartupMessages({
+  library(DESeq2)
+  library(ggplot2)
+  library(dplyr)
+  library(tibble)
+  library(ggrepel)
+  library(pheatmap)
+  library(RColorBrewer)
+})
+
+# count stuff
+
+counts_file <- "/fs/scratch/PAS3260/Fiona/Team_Project/03_rnaseq/counts/counts.txt"
+
+raw <- read.table(counts_file, header = TRUE, skip = 1, sep = "\t",
+                  row.names = 1, check.names = FALSE)
+
+# featureCounts columns 2-6 are metadata; counts start at column 6
+# Column names unclean
+
+count_mat <- raw[, 7:ncol(raw)]
+colnames(count_mat) <- sub(".*/", "", colnames(count_mat))
+colnames(count_mat) <- sub("\\.sorted\\.bam$", "", colnames(count_mat))
+
+cat("Count matrix dimensions:", dim(count_mat), "\n")
+cat("Sample names:", colnames(count_mat), "\n")
+cat("Total read counts per sample:\n")
+print(colSums(count_mat))
+
+# sample metadata
+
+sample_info <- data.frame(
+  row.names = colnames(count_mat),
+  condition = factor(c("WT", "WT", "WT",
+                       "gh31del", "gh31del", "gh31del"),
+                     levels = c("WT", "gh31del"))
+)
+cat("\nSample metadata:\n")
+print(sample_info)
+
+# make data set and prefilter
+
+dds <- DESeqDataSetFromMatrix(
+  countData = count_mat,
+  colData   = sample_info,
+  design    = ~ condition
+)
+
+# Remove genes with very low counts (< 10 total reads)
+
+keep <- rowSums(counts(dds)) >= 10
+dds  <- dds[keep, ]
+cat("\nGenes after low-count filtering:", nrow(dds), "\n")
+
+# run deseq
+dds <- DESeq(dds)
+
+# extract results
+# (positive log2FC = higher in WT)
+
+res <- results(dds,
+               contrast = c("condition", "WT", "gh31del"),
+               alpha = 0.05)
+
+res_df <- as.data.frame(res) %>%
+  tibble::rownames_to_column("gene_id") %>%
+  arrange(padj)
+
+cat("\nSummary of DESeq2 results:\n")
+summary(res)
+
+outdir <- "/fs/scratch/PAS3260/Fiona/Team_Project/03_rnaseq/deseq"
+
+write.csv(res_df,
+          file.path(outdir, "deseq2_results.csv"),
+          row.names = FALSE)
+
+# Significant DEGs: padj < 0.05 and |log2FC| >= 1
+sig <- res_df %>%
+  filter(!is.na(padj), padj < 0.05, abs(log2FoldChange) >= 1)
+
+cat("\nSignificant DEGs (padj < 0.05, |log2FC| >= 1):", nrow(sig), "\n")
+cat("Up in WT:", sum(sig$log2FoldChange > 0), "\n")
+cat("Down in WT:", sum(sig$log2FoldChange < 0), "\n")
+cat("\nTop 20 significant DEGs:\n")
+print(head(sig, 20))
+
+write.csv(sig,
+          file.path(outdir, "sig_DEGs.csv"),
+          row.names = FALSE)
+
+# Variance-stabilizing transformation for visualization
+
+vst_data <- vst(dds, blind = FALSE)
+
+# PCA plot
+
+pca_data <- plotPCA(vst_data, intgroup = "condition", returnData = TRUE)
+pca_var  <- round(100 * attr(pca_data, "percentVar"), 1)
+
+pca_plot <- ggplot(pca_data, aes(x = PC1, y = PC2, color = condition, label = name)) +
+  geom_point(size = 4) +
+  ggrepel::geom_text_repel(size = 3, max.overlaps = 20) +
+  labs(title = "PCA of VST-normalized counts",
+       subtitle = "P. fructicola WT vs gh31del",
+       x = paste0("PC1: ", pca_var[1], "% variance"),
+       y = paste0("PC2: ", pca_var[2], "% variance"),
+       color = "Condition") +
+  theme_bw(base_size = 12)
+
+ggsave(file.path(outdir, "pca_plot.pdf"), pca_plot, width = 7, height = 5)
+
+# 7. Volcano plot
+
+res_df$significance <- "Not significant"
+res_df$significance[res_df$padj < 0.05 & res_df$log2FoldChange >= 1]  <- "Up in WT"
+res_df$significance[res_df$padj < 0.05 & res_df$log2FoldChange <= -1] <- "Down in WT"
+
+# Highlight specific genes of interest
+
+genes_of_interest <- c("t1.AMS68_008039",   # GH31 itself
+                       "t1.AMS68_000995")   # check if it appears
+
+volcano <- ggplot(res_df %>% filter(!is.na(padj)),
+                  aes(x = log2FoldChange, y = -log10(padj),
+                      color = significance)) +
+  geom_point(alpha = 0.5, size = 1) +
+  scale_color_manual(values = c("Not significant" = "grey60",
+                                "Up in WT"        = "#D73027",
+                                "Down in WT"      = "#4575B4")) +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "black", linewidth = 0.5) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black", linewidth = 0.5) +
+  # Annotate top gene
+  geom_point(data = res_df %>% filter(gene_id %in% genes_of_interest),
+             size = 3, shape = 21, color = "black", fill = "gold") +
+  ggrepel::geom_label_repel(
+    data = res_df %>% filter(gene_id %in% genes_of_interest),
+    aes(label = gene_id), size = 3, fill = "white", max.overlaps = 10) +
+  labs(title = "Volcano Plot: WT vs gh31del",
+       subtitle = "P. fructicola differential expression",
+       x = expression(log[2]~"Fold Change (WT / gh31del)"),
+       y = expression(-log[10]~"(adjusted p-value)"),
+       color = "") +
+  theme_bw(base_size = 12) +
+  xlim(-6, 6)
+
+ggsave(file.path(outdir, "volcano_plot.pdf"), volcano, width = 8, height = 6)
+
+# 8. MA plot
+
+pdf(file.path(outdir, "ma_plot.pdf"), width = 7, height = 5)
+plotMA(res, main = "MA Plot: WT vs gh31del", alpha = 0.05, ylim = c(-6, 6))
+dev.off()
+
+# Sample distance heatmap
+
+library(pheatmap)
+sampleDists <- dist(t(assay(vst_data)))
+sampleDistMatrix <- as.matrix(sampleDists)
+
+pdf(file.path(outdir, "sample_distance_heatmap.pdf"), width = 6, height = 5)
+pheatmap(sampleDistMatrix,
+         clustering_distance_rows = sampleDists,
+         clustering_distance_cols = sampleDists,
+         main = "Sample-to-Sample Distances (VST)",
+         color = colorRampPalette(rev(RColorBrewer::brewer.pal(9, "Blues")))(255))
+dev.off()
+
+cat("\nAll output files written to:", outdir, "\n")
+cat("DESeq2 analysis complete.\n")
+REOF
+```
+### submit job
+cat > /fs/scratch/PAS3260/Fiona/Team_Project/03_rnaseq/scripts/run_deseq2.sh << 'EOF'
+#!/bin/bash
+#SBATCH --account=PAS3260
+#SBATCH --job-name=deseq2
+#SBATCH --time=01:00:00
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=16G
+#SBATCH --output=/fs/scratch/PAS3260/Fiona/Team_Project/03_rnaseq/scripts/deseq2_%j.out
+#SBATCH --error=/fs/scratch/PAS3260/Fiona/Team_Project/03_rnaseq/scripts/deseq2_%j.err
+
+mkdir -p /fs/scratch/PAS3260/Fiona/R_libs
+
+export APPTAINERENV_R_LIBS_USER=/fs/scratch/PAS3260/Fiona/R_libs
+
+apptainer exec \
+    --bind /fs/scratch/PAS3260/Fiona/R_libs:/fs/scratch/PAS3260/Fiona/R_libs \
+    /fs/scratch/PAS3260/Fiona/Team_Project/03_rnaseq/containers/deseq2_1.40.2.sif \
+    Rscript /fs/scratch/PAS3260/Fiona/Team_Project/03_rnaseq/scripts/deseq2.R
+EOF
+/fs/scratch/PAS3260/Fiona/Team_Project/03_rnaseq/scripts/run_deseq2.sh
