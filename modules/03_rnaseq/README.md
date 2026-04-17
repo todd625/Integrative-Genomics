@@ -446,6 +446,55 @@ export APPTAINERENV_R_LIBS_USER=/fs/scratch/PAS3260/Fiona/R_libs
 apptainer exec \
     --bind /fs/scratch/PAS3260/Fiona/R_libs:/fs/scratch/PAS3260/Fiona/R_libs \
     /fs/scratch/PAS3260/Fiona/Team_Project/03_rnaseq/containers/deseq2_1.40.2.sif \
+
+    ## `featurecounts_quantify.slurm`: Count reads per gene
+
+## new count reads with mia's annotation
+```bash
+cat > /fs/scratch/PAS3260/Fiona/Team_Project/03_rnaseq/scripts/06e_featurecounts.sh << 'EOF'
+#!/bin/bash
+#SBATCH --account=PAS3260
+#SBATCH --job-name=featurecountspart2
+#SBATCH --output=/fs/scratch/PAS3260/Fiona/Team_Project/03_rnaseq/logs/featurecountspart2_%j.out
+#SBATCH --error=/fs/scratch/PAS3260/Fiona/Team_Project/03_rnaseq/logs/featurecountspart2_%j.err
+#SBATCH --time=00:30:00
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=8
+#SBATCH --mem=16G
+
+set -euo pipefail
+
+CONTAINERS=/fs/scratch/PAS3260/Fiona/Team_Project/03_rnaseq/containers
+STUFF=/fs/scratch/PAS3260/Fiona/Team_Project/03_rnaseq
+
+apptainer exec \
+  --bind ${STUFF}:/data \
+  ${CONTAINERS}/subread_2.1.1.sif \
+  featureCounts \
+  -a /fs/scratch/PAS3260/Fiona/Team_Project/03_rnaseq/prokka/output/isolate.gff \
+  -o /fs/scratch/PAS3260/Fiona/Team_Project/03_rnaseq/counts/counts.txt \
+  -t CDS \
+  -g ID \
+  -p \
+  --countReadPairs \
+  -B \
+  -C \
+  -T 8 \
+  /fs/scratch/PAS3260/Fiona/Team_Project/03_rnaseq/aligned/rnaseq_wt_rep1.sorted.bam \
+  /fs/scratch/PAS3260/Fiona/Team_Project/03_rnaseq/aligned/rnaseq_wt_rep2.sorted.bam \
+  /fs/scratch/PAS3260/Fiona/Team_Project/03_rnaseq/aligned/rnaseq_wt_rep3.sorted.bam
+
+echo "=== featureCounts summary ==="
+cat ${STUFF}/counts/counts.txt.summary
+
+echo ""
+echo "=== First 15 data rows ==="
+grep -v "^#" ${STUFF}/counts/counts.txt \
+  | head -15
+EOF
+
+sbatch /fs/scratch/PAS3260/Fiona/Team_Project/03_rnaseq/scripts/06e_featurecounts.sh
+```
     Rscript /fs/scratch/PAS3260/Fiona/Team_Project/03_rnaseq/scripts/deseq2.R
 EOF
 /fs/scratch/PAS3260/Fiona/Team_Project/03_rnaseq/scripts/run_deseq2.sh
