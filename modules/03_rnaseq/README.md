@@ -207,7 +207,7 @@ apptainer exec \
   --bind ${STUFF}:/data \
   ${CONTAINERS}/subread_2.1.1.sif \
   featureCounts \
-  -a /fs/scratch/PAS3260/Fiona/Team_Project/03_rnaseq/prokka/output/isolate.gff \
+  -a /fs/scratch/PAS3260/mia/Integrative-Genomics/results/02_annotation/annotate_results/Botrytis_cinerea.gff3 \
   -o /fs/scratch/PAS3260/Fiona/Team_Project/03_rnaseq/counts/counts.txt \
   -t CDS \
   -g ID \
