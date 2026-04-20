@@ -1,0 +1,459 @@
+Set up
+```bash
+# Set username
+export user_name=Fiona
+echo "user_name = ${user_name}"
+echo "Your working root = /fs/scratch/PAS3260/${user_name}/RNAseqforteamproject"
+
+# Define paths
+export ANNOT=/fs/scratch/PAS3260/${user_name}/RNAseqforteamproject
+export CONTAINERS=/fs/scratch/PAS3260/${user_name}/RNAseqforteamproject/containers
+
+# Bring in annotation from Mia
+cp -p -n /fs/scratch/PAS3260/mia/Integrative-Genomics/results/02_annotation/unmasked/annotate_results/Botrytis_cinerea.gff3 /fs/scratch/PAS3260/Fiona/RNAseqforteamproject
+```
+
+Create index for HiSat2
+```bash
+cat > /fs/scratch/PAS3260/Fiona/RNAseqforteamproject/hisat2index/hisat2index.sh << 'EOF'
+#!/bin/bash
+#SBATCH --job-name=hisat2_index
+#SBATCH --account=PAS3260
+#SBATCH --time=00:30:00
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=16G
+#SBATCH --output=/fs/scratch/PAS3260/Fiona/RNAseqforteamproject/logs/%x_%j.out
+set -euo pipefail
+
+echo "[$(date)] Building HISAT2 index..."
+
+apptainer exec --bind /fs/scratch/PAS3260/Fiona/RNAseqforteamproject /fs/scratch/PAS3260/Jonathan/Annotation/containers/hisat2_2.2.2.sif \
+    hisat2-build \
+        -p 8 \
+        /fs/scratch/PAS3260/Jonathan/Team_Project/01_novel_isolate/novel_isolate_genome.fa \
+        /fs/scratch/PAS3260/Fiona/RNAseqforteamproject/hisat2index/index
+
+echo "[$(date)] Index complete."
+ls -lh /fs/scratch/PAS3260/Fiona/RNAseqforteamproject/hisat2index/
+EOF
+
+sbatch /fs/scratch/PAS3260/Fiona/RNAseqforteamproject/hisat2index/hisat2index.sh
+```
+
+
+HiSat2
+```bash
+cat > /fs/scratch/PAS3260/Fiona/RNAseqforteamproject/hisat2index/hisat2index.sh << 'EOF'
+#!/bin/bash
+#SBATCH --job-name=hisat2_align
+#SBATCH --account=PAS3260
+#SBATCH --time=01:30:00
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=24G
+#SBATCH --array=1-6
+#SBATCH --output=/fs/scratch/PAS3260/Fiona/RNAseqforteamproject/logs/%x_%j.out
+
+set -euo pipefail
+
+TUTORIAL=/fs/scratch/PAS3260/Fiona/RNAseqforteamproject
+HISAT2_SIF=/fs/scratch/PAS3260/Jonathan/Annotation/containers/hisat2_2.2.2.sif
+SAM_SIF=/fs/scratch/PAS3260/Jonathan/Peltaster/containers/samtools_1.23.1.sif
+INDEX=/fs/scratch/PAS3260/Fiona/RNAseqforteamproject/hisat2index/index
+TRIMDIR=/fs/scratch/PAS3260/Fiona/RNAseqforteamproject/reads
+OUTDIR=/fs/scratch/PAS3260/Fiona/RNAseqforteamproject/aligned
+
+SAMPLES=(rnaseq_wt_rep1 rnaseq_wt_rep2 rnaseq_wt_rep3 \
+         rnaseq_mut_rep1 rnaseq_mut_rep2 rnaseq_mut_rep3)
+SAMPLE=${SAMPLES[$((SLURM_ARRAY_TASK_ID - 1))]}
+
+echo "[$(date)] Aligning: ${SAMPLE}"
+
+# Align → SAM
+apptainer exec --bind ${TUTORIAL},/fs/scratch/PAS3260/Jonathan ${HISAT2_SIF} \
+    hisat2 \
+        -p 8 \
+        --dta \
+        -x ${INDEX} \
+        -1 ${TRIMDIR}/${SAMPLE}_R1_trimmed.fastq.gz \
+        -2 ${TRIMDIR}/${SAMPLE}_R2_trimmed.fastq.gz \
+        --rg-id ${SAMPLE} \
+        --rg "SM:${SAMPLE}" \
+        --rg "PL:ILLUMINA" \
+        -S ${OUTDIR}/${SAMPLE}.sam \
+        2>${TUTORIAL}/logs/hisat2_${SAMPLE}.summary
+
+# Sort SAM → BAM
+apptainer exec --bind ${TUTORIAL},/fs/scratch/PAS3260/Jonathan ${SAM_SIF} \
+    samtools sort \
+        -@ 8 \
+        -m 1G \
+        -o ${OUTDIR}/${SAMPLE}.sorted.bam \
+        ${OUTDIR}/${SAMPLE}.sam
+
+# Index
+apptainer exec --bind ${TUTORIAL},/fs/scratch/PAS3260/Jonathan ${SAM_SIF} \
+    samtools index ${OUTDIR}/${SAMPLE}.sorted.bam
+
+# Clean up intermediate SAM (large file)
+rm ${OUTDIR}/${SAMPLE}.sam
+
+echo "[$(date)] Done: ${SAMPLE}"
+echo "Alignment summary for ${SAMPLE}:"
+cat /fs/scratch/PAS3260/Fiona/RNAseqforteamproject/logs/hisat2_${SAMPLE}.summary
+EOF
+
+sbatch /fs/scratch/PAS3260/Fiona/RNAseqforteamproject/hisat2index/hisat2index.sh
+```
+
+Convert gff3 file to gtf
+```bash
+cat > /fs/scratch/PAS3260/Fiona/RNAseqforteamproject/scripts/02b_gff_to_gtf.sh << 'EOF'
+#!/bin/bash
+#SBATCH --job-name=gff_to_gtf
+#SBATCH --account=PAS3260
+#SBATCH --time=00:10:00
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=2
+#SBATCH --mem=4G
+#SBATCH --output=/fs/scratch/PAS3260/Fiona/RNAseqforteamproject/logs/gff_to_gtf_%j.log
+
+set -euo pipefail
+
+TUTORIAL=/fs/scratch/PAS3260/Fiona/RNAseqforteamproject
+SIF=${TUTORIAL}/containers/gffread.sif
+
+apptainer exec --bind ${TUTORIAL} ${SIF} \
+    gffread \
+        ${TUTORIAL}/Botrytis_cinerea.gff3 \
+        -T \
+        -o ${TUTORIAL}/Botrytis_cinerea.gtf
+
+echo "GTF lines: $(wc -l < ${TUTORIAL}/Botrytis_cinerea.gtf)"
+echo "Sample gene_ids:"
+grep -m 5 'gene_id' ${TUTORIAL}/Botrytis_cinerea.gtf | cut -f9 | cut -d';' -f1
+EOF
+/fs/scratch/PAS3260/Fiona/RNAseqforteamproject/scripts/02b_gff_to_gtf.sh
+```
+
+Count reads per gene with gtf file
+```bash
+cat > /fs/scratch/PAS3260/Fiona/RNAseqforteamproject/scripts/06e_featurecounts.sh << 'EOF'
+#!/bin/bash
+#SBATCH --account=PAS3260
+#SBATCH --job-name=featurecounts
+#SBATCH --output=/fs/scratch/PAS3260/Fiona/RNAseqforteamproject/logs/featurecounts_%j.out
+#SBATCH --error=/fs/scratch/PAS3260/Fiona/RNAseqforteamproject/logs/featurecounts_%j.err
+#SBATCH --time=00:30:00
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=8
+#SBATCH --mem=16G
+
+set -euo pipefail
+
+CONTAINERS=/fs/scratch/PAS3260/Fiona/RNAseqforteamproject/containers/containers
+STUFF=/fs/scratch/PAS3260/Fiona/RNAseqforteamproject
+
+apptainer exec \
+  --bind ${STUFF}:/data \
+  ${CONTAINERS}/subread_2.1.1.sif \
+  featureCounts \
+  -g gene_id \
+  -a /fs/scratch/PAS3260/Fiona/RNAseqforteamproject/Botrytis_cinerea.gtf \
+  -o /fs/scratch/PAS3260/Fiona/RNAseqforteamproject/counts/counts.txt \
+  -t CDS \
+  -p \
+  --countReadPairs \
+  -B \
+  -C \
+  -T 8 \
+  /fs/scratch/PAS3260/Fiona/RNAseqforteamproject/aligned/aligned/rnaseq_wt_rep1.sorted.bam \
+  /fs/scratch/PAS3260/Fiona/RNAseqforteamproject/aligned/aligned/rnaseq_wt_rep2.sorted.bam \
+  /fs/scratch/PAS3260/Fiona/RNAseqforteamproject/aligned/aligned/rnaseq_wt_rep3.sorted.bam \
+  /fs/scratch/PAS3260/Fiona/RNAseqforteamproject/aligned/aligned/rnaseq_mut_rep1.sorted.bam \
+  /fs/scratch/PAS3260/Fiona/RNAseqforteamproject/aligned/aligned/rnaseq_mut_rep2.sorted.bam \
+  /fs/scratch/PAS3260/Fiona/RNAseqforteamproject/aligned/aligned/rnaseq_mut_rep3.sorted.bam \
+
+echo "=== featureCounts summary ==="
+cat ${STUFF}/counts/counts.txt.summary
+
+echo ""
+echo "=== First 15 data rows ==="
+grep -v "^#" ${STUFF}/counts/counts.txt \
+  | head -15
+EOF
+
+sbatch /fs/scratch/PAS3260/Fiona/RNAseqforteamproject/scripts/06e_featurecounts.sh
+```
+
+Set up R library
+```bash
+# Start an interactive session (do not install packages on the login node)
+sinteractive -A PAS3260 -t 30:00
+
+# Load the modules
+module load gcc/12.3.0
+module load R/4.5.2
+
+# Launch R
+R
+
+# Set your personal library path (R will prompt you the first time — say yes)
+lib <- Sys.getenv("R_LIBS_USER")
+dir.create(lib, recursive = TRUE, showWarnings = FALSE)
+
+# CRAN packages
+install.packages(
+  c("ggplot2", "dplyr", "tidyr", "ggrepel", "RColorBrewer",
+    "pheatmap", "scales"),
+  lib = lib,
+  repos = "https://cloud.r-project.org"
+)
+
+# Bioconductor packages
+if (!requireNamespace("BiocManager", quietly = TRUE))
+  install.packages("BiocManager", lib = lib, repos = "https://cloud.r-project.org")
+
+BiocManager::install(
+  c("DESeq2", "BiocGenerics", "S4Vectors", "IRanges",
+    "GenomicRanges", "SummarizedExperiment"),
+  lib = lib,
+  update = FALSE,
+  ask = FALSE
+)
+
+# Confirm all packages load correctly
+pkgs <- c("DESeq2", "ggplot2", "dplyr", "tidyr",
+          "ggrepel", "pheatmap", "RColorBrewer")
+ok <- sapply(pkgs, requireNamespace, quietly = TRUE)
+cat("\nPackage availability:\n")
+print(ok)
+
+q(save = "no")
+exit
+```
+
+Create deseq script
+```bash
+cat > ${TUTORIAL}/scripts/deseq2_peltaster.R << 'REOF'
+
+.libPaths(c(Sys.getenv("R_LIBS_USER"), .libPaths()))
+
+suppressPackageStartupMessages({
+  library(DESeq2)
+  library(ggplot2)
+  library(dplyr)
+  library(ggrepel)
+  library(pheatmap)
+  library(RColorBrewer)
+})
+
+# Load count matrix
+counts_file <- "/fs/scratch/PAS3260/Fiona/RNAseqforteamproject/counts/counts.txt"
+
+raw <- read.table(counts_file, header = TRUE, skip = 1, sep = "\t",
+                  row.names = 1, check.names = FALSE)
+
+# featureCounts: first 5 columns after Geneid are Chr/Start/End/Strand/Length
+# Count columns start at column 6
+count_mat <- raw[, 6:ncol(raw)]
+colnames(count_mat) <- sub(".*/", "", colnames(count_mat))
+colnames(count_mat) <- sub("\\.sorted\\.bam$", "", colnames(count_mat))
+
+cat("Count matrix dimensions:", dim(count_mat), "\n")
+cat("Sample names:", colnames(count_mat), "\n")
+cat("Total read counts per sample:\n")
+print(colSums(count_mat))
+
+# Build metadata (ColData)
+sample_info <- data.frame(
+  row.names = colnames(count_mat),
+  condition = factor(c("wt", "wt", "wt",
+                       "mut", "mut", "mut"),
+                     levels = c("wt", "mut"))
+)
+cat("\nSample metadata:\n")
+print(sample_info)
+
+
+# Make dataset, prefilter
+dds <- DESeqDataSetFromMatrix(
+  countData = count_mat,
+  colData   = sample_info,
+  design    = ~ condition
+)
+
+# Remove genes with very low counts (< 10 total reads)
+keep <- rowSums(counts(dds)) >= 10
+dds  <- dds[keep, ]
+cat("\nGenes after low-count filtering:", nrow(dds), "\n")
+
+# run deseq
+dds <- DESeq(dds)
+
+cat("\nSize factors (library normalization):\n")
+print(sizeFactors(dds))
+
+
+# extract results
+res <- results(dds,
+               contrast = c("condition", "wt", "mut"),
+               alpha = 0.05)
+
+res_df <- as.data.frame(res) %>%
+  tibble::rownames_to_column("gene_id") %>%
+  arrange(padj)
+
+cat("\nSummary of DESeq2 results:\n")
+summary(res)
+
+outdir <- "/fs/scratch/PAS3260/Fiona/RNAseqforteamproject/dge"
+dir.create(outdir, showWarnings = FALSE, recursive = TRUE)
+
+write.csv(res_df,
+          file.path(outdir, "deseq2_results.csv"),
+          row.names = FALSE)
+
+# Significant DEGs: padj < 0.05 and |log2FC| >= 1
+sig <- res_df %>%
+  filter(!is.na(padj), padj < 0.05, abs(log2FoldChange) >= 1)
+
+cat("\nSignificant DEGs (padj < 0.05, |log2FC| >= 1):", nrow(sig), "\n")
+cat("Up in WT:", sum(sig$log2FoldChange > 0), "\n")
+cat("Down in WT:", sum(sig$log2FoldChange < 0), "\n")
+cat("\nTop 20 significant DEGs:\n")
+print(head(sig[, c("gene_id", "baseMean", "log2FoldChange", "padj")], 20))
+
+write.csv(sig,
+          file.path(outdir, "sig_DEGs.csv"),
+          row.names = FALSE)
+
+# stabilize variance transformation to visualize
+vst_data <- vst(dds, blind = FALSE)
+
+# PCA plot
+pca_data <- plotPCA(vst_data, intgroup = "condition", returnData = TRUE)
+pca_var  <- round(100 * attr(pca_data, "percentVar"), 1)
+
+pca_plot <- ggplot(pca_data, aes(x = PC1, y = PC2,
+                                  color = condition, label = name)) +
+  geom_point(size = 4) +
+  geom_text_repel(size = 3, max.overlaps = 20) +
+  scale_color_manual(values = c("WT" = "#2196F3", "mut" = "#E53935")) +
+  labs(title = "PCA of VST-normalized counts",
+       x = paste0("PC1: ", pca_var[1], "% variance"),
+       y = paste0("PC2: ", pca_var[2], "% variance"),
+       color = "Condition") +
+  theme_bw(base_size = 12)
+
+ggsave(file.path(outdir, "pca_plot.pdf"), pca_plot, width = 7, height = 5)
+cat("PCA plot saved.\n")
+
+# volcano plot
+res_df$significance <- "Not significant"
+res_df$significance[!is.na(res_df$padj) &
+                    res_df$padj < 0.05 &
+                    res_df$log2FoldChange >= 1]  <- "Up in WT"
+res_df$significance[!is.na(res_df$padj) &
+                    res_df$padj < 0.05 &
+                    res_df$log2FoldChange <= -1] <- "Down in WT"
+
+# Genes to highlight
+# genes_of_interest <- c("t1.AMS68_008039",  # GH31 itself
+                      # "t1.AMS68_000995")  # GH31 master regulator target
+
+volcano <- ggplot(res_df %>% filter(!is.na(padj)),
+                  aes(x = log2FoldChange, y = -log10(padj),
+                      color = significance)) +
+  geom_point(alpha = 0.5, size = 1) +
+  scale_color_manual(values = c("Not significant" = "grey60",
+                                "Up in wt"        = "#D73027",
+                                "Down in wt"      = "#4575B4")) +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed",
+             color = "black", linewidth = 0.5) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed",
+             color = "black", linewidth = 0.5) +
+  # geom_point(data = res_df %>% filter(gene_id %in% genes_of_interest),
+             # size = 3, shape = 21, color = "black", fill = "gold") +
+  # geom_label_repel(
+   # data = res_df %>% filter(gene_id %in% genes_of_interest),
+   # aes(label = gene_id), size = 3, fill = "white", max.overlaps = 10) +
+  labs(title = "volcano plot: wt vs mut",
+       subtitle = "P. fructicola differential expression",
+       x = expression(log[2]~"Fold Change (wt / mut)"),
+       y = expression(-log[10]~"(adjusted p-value)"),
+       color = "") +
+  theme_bw(base_size = 12) +
+  xlim(-6, 6)
+
+ggsave(file.path(outdir, "volcano_plot.pdf"), volcano, width = 8, height = 6)
+cat("Volcano plot saved.\n")
+
+# ----------------------------------------------------------
+# 8. MA plot
+# ----------------------------------------------------------
+pdf(file.path(outdir, "ma_plot.pdf"), width = 7, height = 5)
+plotMA(res, main = "MA Plot: wt vs mut", alpha = 0.05, ylim = c(-6, 6))
+dev.off()
+cat("MA plot saved.\n")
+
+# ----------------------------------------------------------
+# 9. Dispersion estimates
+# ----------------------------------------------------------
+pdf(file.path(outdir, "dispersion_plot.pdf"), width = 7, height = 5)
+plotDispEsts(dds, main = "DESeq2 Dispersion Estimates")
+dev.off()
+cat("Dispersion plot saved.\n")
+
+# ----------------------------------------------------------
+# 10. Sample distance heatmap
+# ----------------------------------------------------------
+sampleDists       <- dist(t(assay(vst_data)))
+sampleDistMatrix  <- as.matrix(sampleDists)
+
+pdf(file.path(outdir, "sample_distance_heatmap.pdf"), width = 6, height = 5)
+pheatmap(sampleDistMatrix,
+         clustering_distance_rows = sampleDists,
+         clustering_distance_cols = sampleDists,
+         main  = "Sample-to-Sample Distances (VST)",
+         color = colorRampPalette(rev(brewer.pal(9, "Blues")))(255))
+dev.off()
+cat("Sample distance heatmap saved.\n")
+
+cat("\nAll output files written to:", outdir, "\n")
+cat("DESeq2 analysis complete.\n")
+REOF
+```
+
+Run Deseq
+```bash
+cat > ${TUTORIAL}/scripts/03_deseq2.sh << 'EOF'
+#!/bin/bash
+#SBATCH --job-name=deseq2
+#SBATCH --account=PAS3260
+#SBATCH --time=00:30:00
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=16G
+#SBATCH --output=/fs/scratch/PAS3260/Fiona/RNAseqforteamproject/logs/deseq2_%j.log
+
+set -euo pipefail
+
+TUTORIAL=/fs/scratch/PAS3260/Fiona/RNAseqforteamproject
+
+# Load OSC R modules
+module load gcc/12.3.0
+module load R/4.5.2
+
+echo "[$(date)] R version: $(R --version | head -1)"
+echo "[$(date)] Running DESeq2..."
+
+Rscript ${TUTORIAL}/scripts/deseq2_peltaster.R
+
+echo "[$(date)] DESeq2 complete."
+ls -lh ${TUTORIAL}/dge/
+EOF
+cd ${TUTORIAL}
+sbatch ${TUTORIAL}/scripts/03_deseq2.sh
+```
